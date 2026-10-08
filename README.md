@@ -5,7 +5,7 @@
 > indicateurs et des favoris. Vous complétez vous-même les blancs `// TODO`. Le dossier
 > `solution/` sert de dernier recours (à ne regarder qu'en cas de blocage 😉).
 >
-> **Durée :** environ 2 h · **Niveau :** intermédiaire.
+> **Durée :** environ 2 h 30 (2 h sans l'étape 5 ni le second test E2E) · **Niveau :** intermédiaire.
 > **Prérequis :** les bases de React, et le workshop officiel Next.js jusqu'au chapitre 11 au
 > moins (Server Components, `searchParams`, `<Form>`, Server Actions).
 > **Environnement :** Node.js ≥ 20.9 (testé avec Node 22.18), Next.js 16.4, React 19.3, Leaflet 1.9.
@@ -17,7 +17,8 @@
   serveur / client ;
 - piloter la carte avec des **filtres stockés dans l'URL**, sans `useState` ;
 - produire une **dataviz rendue côté serveur**, sans aucune bibliothèque ;
-- modifier des données avec une **Server Action** (des favoris enregistrés dans un cookie).
+- modifier des données avec une **Server Action** (des favoris enregistrés dans un cookie) ;
+- tester l'appli : **tests unitaires** avec Vitest, **test de bout en bout** avec Playwright.
 
 ## 📊 Pourquoi Next.js pour une appli carto ?
 
@@ -51,6 +52,7 @@ préparé ainsi :
 | `lib/velib.ts` | Les types `RawStation` / `Station`, la normalisation et l'analyse des filtres sont **fournis**. Les fonctions à compléter sont marquées `// TODO` |
 | `app/layout.tsx`, `app/loading.tsx` | Le bandeau vert, et le squelette de chargement affiché pendant le rendu de la page |
 | `app/components/kpis.tsx` | Les 4 tuiles d'indicateurs (utilisées à l'étape 3) |
+| `@types/node` passé en version 22 | Vitest 5 (étape 6) refuse la version 20 installée par défaut |
 
 Voici l'arborescence que vous aurez **à la fin du lab**. Les fichiers marqués ✍️ sont ceux que
 vous allez créer ou compléter :
@@ -68,11 +70,15 @@ starter/
 │       ├── station-map-loader.tsx  ✍️ étape 2 (chargement sans SSR)
 │       ├── filters.tsx             ✍️ étape 3
 │       ├── bikes-chart.tsx         ✍️ étape 4
-│       └── favorites-list.tsx      ✍️ étape 5
+│       ├── kpis.test.tsx           ✍️ étape 6
+│       └── favorites-list.tsx      ✍️ étapes 5 et 7
+├── e2e/stations.spec.ts            ✍️ étape 7
 ├── data/velib-snapshot.json        (fourni)
 └── lib/
     ├── velib.ts                    ✍️ étapes 1, 3, 4 (TODO)
+    ├── velib.test.ts               ✍️ étape 6
     └── favorites.ts                ✍️ étape 5
+(+ vitest.config.mts et playwright.config.ts à la racine, étapes 6 et 7)
 ```
 
 ### Le déroulé
@@ -81,10 +87,12 @@ starter/
 |---|---|---|---|
 | 0 | Lancer le starter | 🟢 pas à pas | 10' |
 | 1 | Les données côté serveur | 🟢 pas à pas | 15' |
-| 2 | La carte Leaflet (composant client) | 🟢 guidé | 25' |
-| 3 | Les filtres dans l'URL | 🟡 semi-guidé | 25' |
-| 4 | La dataviz côté serveur | 🟡 semi-guidé | 20' |
+| 2 | La carte Leaflet (composant client) | 🟢 guidé | 20' |
+| 3 | Les filtres dans l'URL | 🟡 semi-guidé | 20' |
+| 4 | La dataviz côté serveur | 🟡 semi-guidé | 15' |
 | 5 | Les favoris avec une Server Action | 🔴 en autonomie | 20' |
+| 6 | Les tests unitaires (Vitest) | 🟡 semi-guidé | 20' |
+| 7 | Le test de bout en bout (Playwright) | 🟡 semi-guidé | 20' |
 | ✅ | Bonus | 🔴 en autonomie | le temps qui reste |
 
 ---
@@ -645,6 +653,423 @@ veut **pas de base de données** : les favoris sont stockés dans un **cookie** 
 
 ---
 
+## 🧪 6 — Les tests unitaires avec Vitest
+
+L'appli fonctionne : on veut maintenant s'assurer qu'elle **continue** de fonctionner quand on la
+modifie. On commence par la base de la pyramide des tests, les **tests unitaires**. Ils sont
+rapides, ne lancent ni serveur ni navigateur, et visent les fonctions **pures** de `lib/velib.ts` :
+elles prennent des données en entrée et renvoient un résultat, sans effet de bord.
+
+| Ce qu'on teste en unitaire | Ce qu'on teste en E2E (étape 7) |
+|---|---|
+| `toStation`, `parseFilters`, `filterStations`, `bikesByZone` | Le parcours complet dans un vrai navigateur |
+| Les composants **synchrones**, comme `<Kpis />` | Les composants serveur **async** (la page), la carte Leaflet, la Server Action |
+| Des millisecondes, des dizaines de cas limites | Quelques secondes, quelques parcours clés |
+
+> ℹ️ Pourquoi pas la page en test unitaire ? La doc Next.js le dit explicitement : Vitest ne sait
+> pas (encore) rendre un composant serveur `async`. On les couvre donc en E2E.
+
+### 6.a — Installer et configurer Vitest
+
+On suit le [guide Vitest de Next.js](https://nextjs.org/docs/app/guides/testing/vitest).
+Installez les dépendances de développement :
+
+```bash
+npm install -D vitest @vitejs/plugin-react jsdom @testing-library/react @testing-library/dom vite-tsconfig-paths
+```
+
+| Paquet | Rôle |
+|---|---|
+| `vitest` | Le lanceur de tests (compatible avec l'API de Jest, mais basé sur Vite, donc plus rapide) |
+| `@vitejs/plugin-react` | Compile le JSX des composants testés |
+| `jsdom` | Un faux DOM en Node.js, pour rendre un composant sans navigateur |
+| `@testing-library/react` (+ `dom`) | `render()` et `screen` : on cherche dans le rendu comme le ferait un utilisateur |
+| `vite-tsconfig-paths` | Fait comprendre l'alias `@/…` (défini dans `tsconfig.json`) à Vitest |
+
+> ⚠️ **Piège — `npm error ERESOLVE could not resolve`.**
+> - *Symptôme :* l'installation échoue avec `peerOptional @types/node@"^22.0.0 || >=24.0.0" from vitest`.
+> - *Cause :* `create-next-app` installe `@types/node` en version 20, alors que Vitest 5 demande la 22 ou plus.
+> - *Correctif :* le starter est déjà en `@types/node@22`, vous ne devriez pas le voir. Sur un projet
+>   neuf, lancez d'abord `npm install -D @types/node@22`, puis relancez l'installation.
+
+Créez ensuite le fichier `vitest.config.mts` à la racine du projet :
+
+```ts
+import { defineConfig, configDefaults } from "vitest/config";
+import react from "@vitejs/plugin-react";
+import tsconfigPaths from "vite-tsconfig-paths";
+
+export default defineConfig({
+  plugins: [tsconfigPaths(), react()],
+  test: {
+    environment: "jsdom",
+    // les tests E2E (Playwright) ne sont pas des tests Vitest
+    exclude: [...configDefaults.exclude, "e2e/**"],
+  },
+});
+```
+
+Enfin, ajoutez ces deux scripts dans le bloc `"scripts"` de `package.json` (le second servira à
+l'étape 7) :
+
+```json
+"test": "vitest",
+"test:e2e": "playwright test"
+```
+
+### 6.b — Écrire les tests de `lib/velib.ts`
+
+Créez `lib/velib.test.ts`. Le début est fourni : une petite **fabrique** `station()` qui construit
+une station valide, dont chaque test ne précise que ce qui l'intéresse. Les tests de `toStation`
+et `parseFilters` sont écrits, pour vous montrer le style.
+
+🚧 **À compléter :** remplacez chaque `it.todo` par un vrai test.
+
+```ts
+import { describe, it, expect } from "vitest";
+import { toStation, parseFilters, filterStations, bikesByZone, type RawStation, type Station } from "@/lib/velib";
+
+// Petite "fabrique" : une station valide, dont on ne précise que ce qui compte pour le test.
+function station(overrides: Partial<Station>): Station {
+  return {
+    id: "11001",
+    name: "Station test",
+    zone: "Paris 11e",
+    lat: 48.85,
+    lon: 2.37,
+    capacity: 20,
+    bikes: 5,
+    mechanical: 3,
+    ebikes: 2,
+    docks: 15,
+    updatedAt: "2026-10-08T10:00:00+00:00",
+    ...overrides,
+  };
+}
+
+describe("toStation", () => {
+  const raw: RawStation = {
+    stationcode: "16107",
+    name: "Benjamin Godard - Victor Hugo",
+    is_installed: "OUI",
+    capacity: 35,
+    numdocksavailable: 19,
+    numbikesavailable: 16,
+    mechanical: 8,
+    ebike: 8,
+    duedate: "2026-10-08T10:31:51+00:00",
+    coordonnees_geo: { lon: 2.275725, lat: 48.865983 },
+    nom_arrondissement_communes: "Paris",
+  };
+
+  it("déduit l'arrondissement du code station", () => {
+    expect(toStation(raw).zone).toBe("Paris 16e");
+  });
+
+  it("écrit « 1er » pour le premier arrondissement", () => {
+    expect(toStation({ ...raw, stationcode: "1020" }).zone).toBe("Paris 1er");
+  });
+
+  it("garde le nom de la commune hors de Paris", () => {
+    expect(toStation({ ...raw, nom_arrondissement_communes: "Montreuil" }).zone).toBe("Montreuil");
+  });
+});
+
+describe("parseFilters", () => {
+  it("renvoie des filtres vides quand l'URL n'a pas de paramètres", () => {
+    expect(parseFilters({})).toEqual({ q: "", zone: "", minBikes: 0, ebikeOnly: false });
+  });
+
+  it("convertit les chaînes de l'URL en valeurs typées", () => {
+    expect(parseFilters({ q: " bastille ", zone: "Paris 11e", minBikes: "5", ebike: "on" })).toEqual({
+      q: "bastille",
+      zone: "Paris 11e",
+      minBikes: 5,
+      ebikeOnly: true,
+    });
+  });
+});
+
+describe("filterStations", () => {
+  // 3 stations choisies pour que chaque filtre en écarte au moins une
+  const stations = [
+    station({ id: "1", name: "Place de la Bastille", zone: "Paris 11e", bikes: 10, ebikes: 0 }),
+    station({ id: "2", name: "Bastille - Biscornet", zone: "Paris 12e", bikes: 2, ebikes: 1 }),
+    station({ id: "3", name: "République", zone: "Paris 11e", bikes: 0, ebikes: 0 }),
+  ];
+  const none = parseFilters({}); // aucun filtre
+
+  it("renvoie tout sans filtre", () => {
+    expect(filterStations(stations, none)).toHaveLength(3);
+  });
+
+  it.todo("filtre sur le nom sans tenir compte de la casse"); // q: "BASTILLE" -> ids ["1", "2"]
+  it.todo("combine les filtres (nom + zone)"); // q: "bastille" + zone: "Paris 11e" -> ["1"]
+  it.todo("applique le minimum de vélos et le filtre électrique"); // minBikes: 5 -> ["1"] ; ebikeOnly -> ["2"]
+});
+
+describe("bikesByZone", () => {
+  const stations = [
+    station({ zone: "Paris 11e", bikes: 5, mechanical: 3, ebikes: 2 }),
+    station({ zone: "Paris 12e", bikes: 20, mechanical: 15, ebikes: 5 }),
+    station({ zone: "Paris 11e", bikes: 4, mechanical: 4, ebikes: 0 }),
+  ];
+
+  it.todo("additionne les vélos par zone et trie par ordre décroissant"); // 12e (20) puis 11e (9)
+  it.todo("ne garde que les `top` premières zones");
+  it.todo("renvoie un tableau vide sans station");
+});
+```
+
+| Matcher | Quand l'utiliser |
+|---|---|
+| `toBe(x)` | Une valeur simple (nombre, chaîne, booléen) |
+| `toEqual(obj)` | Un objet ou un tableau, comparé **en profondeur** |
+| `toHaveLength(n)` | La taille d'un tableau |
+
+> 💡 Pour comparer des listes de stations, comparez plutôt leurs ids :
+> `filterStations(...).map((s) => s.id)`. Le message d'erreur sera bien plus lisible.
+
+### 6.c — Tester un composant : `<Kpis />`
+
+`<Kpis />` est un composant serveur, mais **synchrone** : Testing Library sait donc le rendre.
+Créez `app/components/kpis.test.tsx` :
+
+```tsx
+import { afterEach, describe, it, expect } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import Kpis from "@/app/components/kpis";
+import type { Station } from "@/lib/velib";
+
+afterEach(cleanup); // vide le DOM entre deux tests
+
+const base: Station = {
+  id: "1", name: "A", zone: "Paris 11e", lat: 0, lon: 0,
+  capacity: 20, bikes: 0, mechanical: 0, ebikes: 0, docks: 20, updatedAt: "",
+};
+
+describe("<Kpis />", () => {
+  it("affiche les totaux des stations reçues", () => {
+    render(
+      <Kpis
+        stations={[
+          { ...base, id: "1", bikes: 10, mechanical: 7, ebikes: 3 },
+          { ...base, id: "2", bikes: 0 },
+        ]}
+      />,
+    );
+
+    // la valeur est dans la <div> qui suit le libellé
+    expect(screen.getByText("Stations").nextSibling?.textContent).toBe("2");
+    // TODO : vérifier « Vélos disponibles » (10), « dont électriques » (3) et « Stations vides » (1)
+  });
+});
+```
+
+> 📖 [Guide Vitest de Next.js](https://nextjs.org/docs/app/guides/testing/vitest) ·
+> [API `expect` de Vitest](https://vitest.dev/api/expect.html) ·
+> [Testing Library — Queries](https://testing-library.com/docs/queries/about)
+>
+> 💡 **Tester :** `npm test` lance Vitest en mode surveillance (il relance les tests à chaque
+> sauvegarde, `q` pour quitter). Avec le squelette tel quel, vous lisez
+> `Tests  7 passed | 6 todo (13)` : les `it.todo` sont listés mais pas exécutés. Une fois tous les
+> `it.todo` remplacés, vous devez lire :
+> ```
+>  Test Files  2 passed (2)
+>       Tests  13 passed (13)
+> ```
+
+> 🧪 **Manip — un test doit pouvoir échouer.** Dans `filterStations()`, supprimez temporairement le
+> `.toLowerCase()` appliqué au nom de la station. Sauvegardez : le test « sans tenir compte de la
+> casse » passe au rouge et Vitest affiche les ids attendus et reçus. Remettez le code en place.
+> Un test qu'on n'a jamais vu échouer ne prouve pas grand-chose.
+
+---
+
+## 🎭 7 — Le test de bout en bout avec Playwright
+
+> 🟡 **Semi-guidé.** La configuration est fournie. Le premier test est à compléter, le second est
+> à écrire à partir d'indices.
+
+Un test **E2E** (*end-to-end*, de bout en bout) pilote un **vrai navigateur**, comme le ferait un
+utilisateur : il remplit le formulaire, clique sur la carte, vérifie ce qui s'affiche. C'est le
+seul moyen de tester ensemble la page serveur, la carte Leaflet et la Server Action.
+
+Voici le scénario qu'on va automatiser :
+
+1. chercher « Bastille » dans la zone « Paris 11e » ;
+2. vérifier les indicateurs : **1** station, **45** vélos, **8** électriques, **0** station vide ;
+3. cliquer sur la station de la carte, l'ajouter aux favoris, puis la retirer.
+
+> ⚠️ **Pourquoi 45 vélos, alors que vous voyez autre chose en ce moment ?** Avec les données en
+> temps réel, la même recherche donne par exemple 50 vélos, puis 47 dix minutes plus tard. Un test
+> qui dépend de données qui bougent échouera au hasard : on dit qu'il est **instable** (*flaky*).
+> On lance donc l'appli en **mode hors ligne** (`VELIB_OFFLINE=1`) pendant les tests : les données
+> viennent du snapshot et sont toujours les mêmes. C'est l'intérêt d'avoir prévu ce mode dès
+> l'étape 1.
+
+### 7.a — Installer et configurer Playwright
+
+```bash
+npm install -D @playwright/test
+npx playwright install chromium
+```
+
+La seconde commande télécharge le navigateur Chromium utilisé par Playwright (environ 100 Mo, une
+seule fois par machine).
+
+Créez `playwright.config.ts` à la racine du projet :
+
+```ts
+import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  testDir: "./e2e",
+  use: {
+    baseURL: "http://localhost:3100",
+    trace: "on-first-retry",
+  },
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // Playwright construit et démarre lui-même l'appli (build de prod), en mode hors ligne :
+  // les données viennent du snapshot, elles sont donc toujours les mêmes.
+  webServer: {
+    command: "npm run build && npm run start -- --port 3100",
+    url: "http://localhost:3100",
+    env: { VELIB_OFFLINE: "1" },
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+  },
+});
+```
+
+| Option | Rôle |
+|---|---|
+| `testDir` | Le dossier des tests E2E (séparé des tests Vitest) |
+| `baseURL` | Permet d'écrire `page.goto("/")` au lieu de l'URL complète |
+| `webServer.command` | Playwright lance l'appli lui-même avant les tests, puis l'arrête |
+| `webServer.env` | Les variables d'environnement de l'appli lancée : ici le mode hors ligne |
+| `reuseExistingServer` | En local, si le port 3100 répond déjà, Playwright réutilise ce serveur |
+
+> ℹ️ **Pourquoi un build de prod sur le port 3100, et pas `npm run dev` ?** Next.js 16 refuse de
+> lancer deux `next dev` dans le même projet (`⨯ Another next dev server is already running.`).
+> Or votre `npm run dev` tourne sûrement déjà sur le port 3000, avec les données en temps réel. Un
+> `build` + `start` cohabite sans problème avec lui. En plus, il teste l'appli telle qu'elle sera
+> déployée, ce qui est aussi ce que fera une CI.
+
+### 7.b — Rendre l'appli facile à tester
+
+Playwright recommande de chercher les éléments **comme un utilisateur** : par leur rôle et leur
+texte accessible (`getByRole`, `getByLabel`), plutôt que par une classe CSS. Notre appli s'y
+prête déjà en grande partie :
+
+| Élément | Comment le test le trouve | Pourquoi ça marche |
+|---|---|---|
+| Champ « Nom de station » | `page.getByLabel("Nom de station")` | Le `<input>` est **dans** son `<label>` |
+| Bouton « Filtrer » | `page.getByRole("button", { name: "Filtrer" })` | Le texte du bouton est son nom accessible |
+| Panneau des favoris | `page.getByRole("region", { name: /Mes stations favorites/ })` | ⚠️ seulement si la `<section>` a un nom accessible (voir ci-dessous) |
+| Marqueur de la carte | `page.locator("path.leaflet-interactive")` | Exception : un cercle Leaflet est un `<path>` SVG sans rôle, on passe par sa classe |
+
+🚧 **À compléter :** dans `app/components/favorites-list.tsx`, reliez la `<section>` à son titre.
+Sans nom, une `<section>` n'a pas le rôle `region`, et ni un lecteur d'écran ni Playwright ne peut
+la désigner (vous retrouvez ici le chapitre 13 sur l'accessibilité) :
+
+```tsx
+<section aria-labelledby="favorites-title" className="rounded-lg bg-white p-4 shadow-sm">
+  <h2 id="favorites-title" className="mb-2 font-semibold">★ Mes stations favorites</h2>
+```
+
+> ℹ️ Le test s'appuie sur les textes de l'appli (« Ajouter aux favoris », « Retirer des favoris »,
+> « Aucun favori »). Si vous avez choisi d'autres libellés à l'étape 5, adaptez le test.
+
+### 7.c — Écrire le scénario
+
+Créez le dossier `e2e/` et, dedans, le fichier `e2e/stations.spec.ts`. Le fichier contient deux
+tests : le premier ne dépend que des étapes 1 à 4, le second a besoin des favoris de l'étape 5.
+
+🚧 **À compléter :**
+
+```ts
+import { test, expect, type Page } from "@playwright/test";
+
+const STATION = "Richard Lenoir - Place de la Bastille";
+
+/** La valeur affichée dans la tuile d'indicateur qui porte ce libellé. */
+function kpi(page: Page, label: string) {
+  return page.getByText(label, { exact: true }).locator("xpath=following-sibling::div");
+}
+
+test("filtrer sur Bastille dans le 11e met à jour l'URL, les indicateurs et la carte", async ({ page }) => {
+  await page.goto("/");
+
+  // 1. Remplir et soumettre le formulaire
+  await page.getByLabel("Nom de station").fill("Bastille");
+  // TODO : choisir « Paris 11e » dans le champ « Zone » (selectOption)
+  await page.getByRole("button", { name: "Filtrer" }).click();
+
+  // 2. Les filtres sont dans l'URL
+  await expect(page).toHaveURL(/q=Bastille/);
+  // TODO : vérifier que l'URL contient aussi la zone (attention, l'espace devient un « + »)
+
+  // 3. Les indicateurs (valeurs du snapshot)
+  await expect(kpi(page, "Stations")).toHaveText("1");
+  // TODO : « Vélos disponibles » = 45, « dont électriques » = 8, « Stations vides » = 0
+
+  // 4. Une seule station sur la carte, et sa bulle
+  await expect(page.locator("path.leaflet-interactive")).toHaveCount(1);
+  await page.locator("path.leaflet-interactive").click();
+  // TODO : vérifier que la bulle (".leaflet-popup") contient le nom de la station
+});
+
+test("ajouter puis retirer une station des favoris", async ({ page }) => {
+  // On arrive directement sur la vue filtrée : l'URL suffit à reconstruire l'état
+  await page.goto("/?q=Bastille&zone=Paris+11e");
+  const favorites = page.getByRole("region", { name: /Mes stations favorites/ });
+  await expect(favorites).toContainText("Aucun favori");
+
+  // TODO 1 : ouvrir la bulle, cliquer sur « Ajouter aux favoris »,
+  //          vérifier que le panneau contient STATION
+  // TODO 2 : vérifier le cookie : page.context().cookies() doit contenir { name: "favorites", value: "11001" }
+  // TODO 3 : recharger la page (page.reload()) et vérifier que le favori est toujours là
+  // TODO 4 : rouvrir la bulle, cliquer sur « Retirer des favoris », vérifier « Aucun favori »
+});
+```
+
+| API Playwright | Rôle |
+|---|---|
+| `page.goto(url)` | Ouvre une page (relative à `baseURL`) |
+| `locator.fill(texte)` / `locator.selectOption(valeur)` / `locator.click()` | Les actions de l'utilisateur |
+| `expect(locator).toHaveText(...)` / `.toContainText(...)` / `.toHaveCount(n)` | Des assertions qui **attendent** (jusqu'à 5 s) que la condition soit vraie |
+| `expect(page).toHaveURL(regex)` | Vérifie l'URL courante |
+| `popup.getByRole("button", { name: /Ajouter/ })` | Cherche **à l'intérieur** d'un autre locator |
+
+> 💡 Les assertions `expect(locator)` **réessayent** automatiquement : pas besoin d'attendre à la
+> main que la Server Action ait fini et que la page soit re-rendue. C'est pour cela qu'on n'écrit
+> jamais de `waitForTimeout(2000)`.
+
+> 📖 [Guide Playwright de Next.js](https://nextjs.org/docs/app/guides/testing/playwright) ·
+> [Locators](https://playwright.dev/docs/locators) ·
+> [Assertions](https://playwright.dev/docs/test-assertions) ·
+> [`webServer`](https://playwright.dev/docs/test-webserver)
+>
+> 💡 **Tester :** `npm run test:e2e`. Playwright commence par le build (quelques secondes),
+> puis lance les tests :
+> ```
+> Running 2 tests using 1 worker
+>   ✓  1 [chromium] › e2e/stations.spec.ts:10:5 › filtrer sur Bastille dans le 11e met à jour l'URL, les indicateurs et la carte
+>   ✓  2 [chromium] › e2e/stations.spec.ts:34:5 › ajouter puis retirer une station des favoris
+>   2 passed
+> ```
+> Tant que le `TODO` du choix de la zone n'est pas fait, le premier test échoue sur
+> `kpi(page, "Stations")` : il trouve 5 stations « Bastille » (dans les 4e, 11e et 12e) au lieu
+> d'une seule. C'est normal, et c'est une bonne occasion de lire un rapport d'échec Playwright.
+> Pour **voir** le navigateur travailler, lancez `npx playwright test --ui`.
+
+> ℹ️ Chaque test s'exécute dans son **propre contexte de navigateur**, avec ses propres cookies,
+> comme une fenêtre de navigation privée neuve. Un favori ajouté par un test ne pollue donc jamais
+> un autre test : chacun repart d'un état vide.
+
+---
+
 ## 🎉 Challenge final
 
 - [ ] la page affiche les ~1 500 stations, venues de l'API (ou du snapshot hors ligne) ;
@@ -652,7 +1077,9 @@ veut **pas de base de données** : les favoris sont stockés dans un **cookie** 
 - [ ] les 4 filtres fonctionnent, sont dans l'URL, et une URL copiée redonne la même vue ;
 - [ ] les indicateurs et le top 10 suivent les filtres ;
 - [ ] les favoris s'ajoutent et se retirent depuis la carte, et survivent au rechargement ;
-- [ ] `npm run build` passe sans erreur.
+- [ ] `npm run build` passe sans erreur ;
+- [ ] `npm test` : les 13 tests unitaires passent ;
+- [ ] `npm run test:e2e` : les 2 scénarios Playwright passent.
 
 ## ✅ Bonus
 
@@ -688,3 +1115,6 @@ Les bonus ne sont **pas** dans `solution/`. Choisissez selon votre envie.
   n'envoie aucun JavaScript.
 - **Une Server Action est un point d'entrée public :** elle sert aux mutations (ici le cookie des
   favoris), et rien d'autre ne doit être exporté depuis un fichier `"use server"`.
+- **Chaque niveau de test a son rôle :** Vitest pour les fonctions pures et les composants
+  synchrones (rapide, nombreux cas), Playwright pour les parcours qui traversent serveur, carte et
+  Server Action. Un test E2E fiable a besoin de **données figées**.

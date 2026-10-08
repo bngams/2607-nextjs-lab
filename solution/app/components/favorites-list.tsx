@@ -3,8 +3,8 @@ import { toggleFavorite } from "@/app/actions";
 
 export default function FavoritesList({ stations }: { stations: Station[] }) {
   return (
-    <section className="rounded-lg bg-white p-4 shadow-sm">
-      <h2 className="mb-2 font-semibold">★ Mes stations favorites</h2>
+    <section aria-labelledby="favorites-title" className="rounded-lg bg-white p-4 shadow-sm">
+      <h2 id="favorites-title" className="mb-2 font-semibold">★ Mes stations favorites</h2>
       {stations.length === 0 ? (
         <p className="text-sm text-slate-500">Aucun favori : cliquez sur une station de la carte.</p>
       ) : (
